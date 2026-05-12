@@ -387,40 +387,144 @@ int main(int argc, char* argv[]) {
     print_sep();
 
     // ================================================================
-    // TRANSPORT: phone content indexing for fast server delivery
+    // DRAM BENCHMARK
     // ================================================================
     std::cout << "\n";
     std::cout << "================================================================\n";
-    std::cout << "  PHONE CONTENT INDEXING - FAST SERVER TRANSPORT\n";
+    std::cout << "  DRAM MEASUREMENT\n";
+    std::cout << "================================================================\n";
+
+    MemoryBenchmark mem_bench;
+    auto mem_result = mem_bench.run(16 * 1024 * 1024, 100);
+    double dram_mbps = mem_result.throughput_mbps;
+    double dram_latency_ns = mem_result.timing.avg_latency_ns;
+
+    std::cout << "\n";
+    pm("  DRAM Bandwidth:", dram_mbps, "MB/s", 2);
+    pm("  DRAM Latency:", dram_latency_ns, "ns", 2);
+    print_sep();
+
+    // ================================================================
+    // RF UNIT SIMULATION
+    // ================================================================
+    std::cout << "\n";
+    std::cout << "================================================================\n";
+    std::cout << "  RF UNIT (radio frequency transport simulation)\n";
+    std::cout << "================================================================\n";
+
+    double rf_score = 0.0;
+    {
+        Timer rf_timer;
+        rf_timer.start();
+        volatile double rf_acc = 0.0;
+        for (int i = 0; i < 500000; ++i) {
+            double freq = 2.4e9 + static_cast<double>(i) * 1000.0;
+            double wavelength = 3e8 / freq;
+            double signal = std::sin(freq * 1e-9) * std::exp(-wavelength * 0.1);
+            double modulated = signal * std::cos(freq * 0.5e-9);
+            rf_acc += modulated;
+        }
+        (void)rf_acc;
+        double rf_elapsed = rf_timer.elapsed_seconds();
+        rf_score = 500000.0 / rf_elapsed;
+    }
+
+    pm("  RF Throughput:", rf_score, "signals/sec", 0);
+    pm("  RF Score:", rf_score / 1e6, "M", 2);
+    print_sep();
+
+    // ================================================================
+    // POWER CHAIN: cpu^dram^cpu^gpu^screen^cpu^rfunit
+    // Exponents: 2, 3, 1, 4
+    // ================================================================
+    std::cout << "\n";
+    std::cout << "================================================================\n";
+    std::cout << "  POWER CHAIN: cpu^dram^cpu^gpu^screen^cpu^rfunit\n";
+    std::cout << "  Exponents: 2, 3, 1, 4\n";
+    std::cout << "================================================================\n\n";
+
+    double cpu_score = accel_factor;
+    double dram_score_norm = dram_mbps / 100.0;
+    double gpu_score_norm = total_gflops / 100.0;
+    double screen_score = blink.fps;
+    double rf_score_norm = rf_score / 1e6;
+
+    double p_cpu   = std::pow(cpu_score, 2.0);
+    double p_dram  = std::pow(dram_score_norm, 3.0);
+    double p_gpu   = std::pow(gpu_score_norm, 1.0);
+    double p_screen = std::pow(screen_score / 10.0, 1.0);
+    double p_rf    = std::pow(rf_score_norm, 4.0);
+
+    double power_factor = p_cpu * p_dram * p_gpu * p_screen * p_rf;
+
+    std::cout << "  COMPONENT SCORES:\n";
+    print_sep();
+    pm("  CPU (accel):", cpu_score, "x", 1);
+    pm("  DRAM (norm):", dram_score_norm, "", 2);
+    pm("  GPU (norm):", gpu_score_norm, "", 2);
+    pm("  Screen (FPS):", screen_score, "FPS", 1);
+    pm("  RF (M signals):", rf_score_norm, "M", 2);
+    print_sep();
+
+    std::cout << "\n  POWER CHAIN (exponents 2,3,1,4):\n";
+    print_sep();
+    pm("  CPU^2:", p_cpu, "", 2);
+    pm("  DRAM^3:", p_dram, "", 2);
+    pm("  GPU^1:", p_gpu, "", 2);
+    pm("  Screen^1:", p_screen, "", 2);
+    pm("  RF^4:", p_rf, "", 2);
+    pm_sci("  Power Factor:", power_factor, "");
+    print_sep();
+
+    double boosted_slow_kbps = slow_kbps * power_factor;
+    double boosted_fast_kbps = fast_kbps * power_factor;
+
+    std::cout << "\n  POWERED THROUGHPUT:\n";
+    print_sep();
+    pm("  Base Slow:", slow_kbps, "kbps", 2);
+    pm_sci("  Powered Slow:", boosted_slow_kbps, "kbps");
+    pm("  Base Fast:", fast_kbps, "kbps", 2);
+    pm_sci("  Powered Fast:", boosted_fast_kbps, "kbps");
+    pm_sci("  Power Factor:", power_factor, "x");
+    print_sep();
+
+    // ================================================================
+    // TRANSPORT: phone content indexing with power boost
+    // ================================================================
+    std::cout << "\n";
+    std::cout << "================================================================\n";
+    std::cout << "  PHONE CONTENT INDEXING - POWERED TRANSPORT\n";
     std::cout << "  Bandwidth: 700-11250 kbps | Delivery: 5-15 sec\n";
+    std::cout << "  Power: cpu^dram^cpu^gpu^screen^cpu^rfunit\n";
     std::cout << "================================================================\n\n";
 
     TransportProfile tp{};
     tp.slow_baseline_ms = combined.mean / 1e6;
-    tp.index_rate_ops = 1e9 / combined.mean;
-    tp.content_kb_5sec_min = BW_MIN_KBPS * DELIVER_MIN_SEC;
-    tp.content_kb_5sec_max = BW_MAX_KBPS * DELIVER_MIN_SEC;
-    tp.content_kb_15sec_min = BW_MIN_KBPS * DELIVER_MAX_SEC;
-    tp.content_kb_15sec_max = BW_MAX_KBPS * DELIVER_MAX_SEC;
+    tp.index_rate_ops = (1e9 / combined.mean) * power_factor;
+    tp.content_kb_5sec_min = BW_MIN_KBPS * DELIVER_MIN_SEC * power_factor;
+    tp.content_kb_5sec_max = BW_MAX_KBPS * DELIVER_MIN_SEC * power_factor;
+    tp.content_kb_15sec_min = BW_MIN_KBPS * DELIVER_MAX_SEC * power_factor;
+    tp.content_kb_15sec_max = BW_MAX_KBPS * DELIVER_MAX_SEC * power_factor;
 
     double mid_bw = (BW_MIN_KBPS + BW_MAX_KBPS) / 2.0;
     double mid_time = (DELIVER_MIN_SEC + DELIVER_MAX_SEC) / 2.0;
-    tp.optimal_chunk_kb = mid_bw * mid_time / accel_factor;
+    tp.optimal_chunk_kb = mid_bw * mid_time * power_factor / accel_factor;
 
-    std::cout << "  INDEX PERFORMANCE:\n";
+    std::cout << "  INDEX PERFORMANCE (powered):\n";
     print_sep();
     pm("  Slow Baseline:", tp.slow_baseline_ms, "ms", 6);
-    pm("  Index Rate:", tp.index_rate_ops, "ops/sec", 0);
+    pm_sci("  Index Rate:", tp.index_rate_ops, "ops/sec");
     pm("  GPU Assist:", total_gflops, "GFLOPS", 2);
+    pm_sci("  Power Factor:", power_factor, "x");
     print_sep();
 
-    std::cout << "\n  TRANSPORT CAPACITY:\n";
+    std::cout << "\n  TRANSPORT CAPACITY (powered):\n";
     print_sep();
-    pm("  5 sec @ 700 kbps:", tp.content_kb_5sec_min, "KB", 2);
-    pm("  5 sec @ 11250 kbps:", tp.content_kb_5sec_max, "KB", 2);
-    pm("  15 sec @ 700 kbps:", tp.content_kb_15sec_min, "KB", 2);
-    pm("  15 sec @ 11250 kbps:", tp.content_kb_15sec_max, "KB", 2);
-    pm("  Optimal Chunk:", tp.optimal_chunk_kb, "KB", 2);
+    pm_sci("  5 sec @ 700 kbps:", tp.content_kb_5sec_min, "KB");
+    pm_sci("  5 sec @ 11250 kbps:", tp.content_kb_5sec_max, "KB");
+    pm_sci("  15 sec @ 700 kbps:", tp.content_kb_15sec_min, "KB");
+    pm_sci("  15 sec @ 11250 kbps:", tp.content_kb_15sec_max, "KB");
+    pm_sci("  Optimal Chunk:", tp.optimal_chunk_kb, "KB");
     print_sep();
 
     // ================================================================
@@ -460,15 +564,23 @@ int main(int argc, char* argv[]) {
     pm("  Acceleration:", accel_factor, "x", 1);
     pm("  Speedup:", accel_factor * 100.0, "%", 0);
     pm("  GPU:", total_gflops, "GFLOPS", 2);
+    pm("  DRAM:", dram_mbps, "MB/s", 2);
+    pm("  RF:", rf_score / 1e6, "M signals/sec", 2);
+    print_sep();
+
+    std::cout << "\n  POWER CHAIN RESULT:\n";
+    print_sep();
+    std::cout << "  cpu^2 * dram^3 * gpu^1 * screen^1 * rf^4\n";
+    pm_sci("  Power Factor:", power_factor, "x");
+    pm_sci("  Powered Throughput:", boosted_slow_kbps, "kbps");
     print_sep();
 
     std::cout << "\n";
     pm("  Total Benchmark Time:", total_seconds, "seconds", 2);
     std::cout << "\n  Calibration complete.\n";
     std::cout << "  900K attempts timed, " << TOTAL_SLOW << " slowest accepted.\n";
+    std::cout << "  Power: cpu^dram^cpu^gpu^screen^cpu^rfunit (2,3,1,4)\n";
     std::cout << "  CPU: slow baseline -> really fast.\n";
-    std::cout << "  Content: " << std::fixed << std::setprecision(1)
-              << tp.optimal_chunk_kb << " KB chunks, 700-11250 kbps, 5-15 sec.\n";
 
     std::cout << "\n  Platform: Windows 11 x86_64\n";
     std::cout << "================================================================\n";
