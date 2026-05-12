@@ -46,6 +46,21 @@
 #include <windows.h>
 #endif
 
+#include <cstdint>
+#include <fstream>
+
+static const char* detect_platform() {
+#ifdef _WIN32
+    return "Windows x86_64";
+#elif defined(__linux__)
+    return "Linux x86_64";
+#elif defined(__APPLE__)
+    return "macOS";
+#else
+    return "Unknown";
+#endif
+}
+
 static constexpr std::size_t LOOP_COUNT = 300000;
 static constexpr int COL_ACCEPT = 33;
 static constexpr int NUM_COLUMNS = 3;
@@ -255,8 +270,125 @@ static ScreenBlinkResult run_screen_blink(double duration = 3.0) {
     return r;
 }
 
+struct OctetStreamHeader {
+    char magic[8];
+    uint32_t version;
+    uint32_t num_columns;
+    uint32_t col_accept;
+    uint32_t loop_count;
+    double bw_min_kbps;
+    double bw_max_kbps;
+    double deliver_min_sec;
+    double deliver_max_sec;
+};
+
+struct OctetStreamColumn {
+    uint32_t col_id;
+    uint32_t num_accepted;
+    double gauss_mean;
+    double gauss_sigma;
+    double gauss_amplitude;
+    double all_min_ns;
+    double all_max_ns;
+    double all_avg_ns;
+    double throughput_kbps;
+};
+
+struct OctetStreamResult {
+    double combined_mean;
+    double combined_sigma;
+    double combined_amplitude;
+    double slow_kbps;
+    double fast_kbps;
+    double accel_factor;
+    double power_factor;
+    double boosted_kbps;
+    double gpu_gflops;
+    double dram_mbps;
+    double rf_score;
+    double index_rate;
+    double optimal_chunk_kb;
+    double total_time_sec;
+};
+
+static void write_octet_stream(const char* filename,
+                                const ColumnResult cols[],
+                                const GaussianParams& combined,
+                                double slow_kbps, double fast_kbps,
+                                double accel_factor, double power_factor,
+                                double boosted_kbps, double gpu_gflops,
+                                double dram_mbps, double rf_score,
+                                double index_rate, double optimal_chunk_kb,
+                                double total_time) {
+    std::ofstream out(filename, std::ios::binary);
+
+    OctetStreamHeader hdr{};
+    std::memcpy(hdr.magic, "AI2ORBIT", 8);
+    hdr.version = 3;
+    hdr.num_columns = NUM_COLUMNS;
+    hdr.col_accept = COL_ACCEPT;
+    hdr.loop_count = static_cast<uint32_t>(LOOP_COUNT);
+    hdr.bw_min_kbps = BW_MIN_KBPS;
+    hdr.bw_max_kbps = BW_MAX_KBPS;
+    hdr.deliver_min_sec = DELIVER_MIN_SEC;
+    hdr.deliver_max_sec = DELIVER_MAX_SEC;
+    out.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+
+    for (int c = 0; c < NUM_COLUMNS; ++c) {
+        OctetStreamColumn col{};
+        col.col_id = c + 1;
+        col.num_accepted = COL_ACCEPT;
+        col.gauss_mean = cols[c].gauss.mean;
+        col.gauss_sigma = cols[c].gauss.sigma;
+        col.gauss_amplitude = cols[c].gauss.amplitude;
+        col.all_min_ns = cols[c].all_min_ns;
+        col.all_max_ns = cols[c].all_max_ns;
+        col.all_avg_ns = cols[c].all_avg_ns;
+        col.throughput_kbps = cols[c].throughput_kbps;
+        out.write(reinterpret_cast<const char*>(&col), sizeof(col));
+
+        for (int i = 0; i < COL_ACCEPT; ++i) {
+            double val = cols[c].accepted_slow[i];
+            out.write(reinterpret_cast<const char*>(&val), sizeof(double));
+        }
+    }
+
+    OctetStreamResult res{};
+    res.combined_mean = combined.mean;
+    res.combined_sigma = combined.sigma;
+    res.combined_amplitude = combined.amplitude;
+    res.slow_kbps = slow_kbps;
+    res.fast_kbps = fast_kbps;
+    res.accel_factor = accel_factor;
+    res.power_factor = power_factor;
+    res.boosted_kbps = boosted_kbps;
+    res.gpu_gflops = gpu_gflops;
+    res.dram_mbps = dram_mbps;
+    res.rf_score = rf_score;
+    res.index_rate = index_rate;
+    res.optimal_chunk_kb = optimal_chunk_kb;
+    res.total_time_sec = total_time;
+    out.write(reinterpret_cast<const char*>(&res), sizeof(res));
+
+    out.close();
+}
+
 int main(int argc, char* argv[]) {
     enable_ansi();
+
+    bool octet_stream = false;
+    std::string octet_file = "benchmark_v3.bin";
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--octet-stream" || arg == "--binary") {
+            octet_stream = true;
+            if (i + 1 < argc && argv[i+1][0] != '-') {
+                octet_file = argv[++i];
+            }
+        }
+    }
+
+    const char* platform = detect_platform();
 
     std::cout << "\n";
     std::cout << "================================================================\n";
@@ -270,8 +402,10 @@ int main(int argc, char* argv[]) {
     std::cout << "  GAUSSIAN CALIBRATION - ACCEPT ONLY SLOW\n";
     std::cout << "  Copyright (c) AI2ORBIT Co. 2026\n";
     std::cout << "  Authors: Sami Leino, Anirudha Talmale\n";
-    std::cout << "  Platform: Windows 11 x86_64\n";
+    std::cout << "  Platform: " << platform << "\n";
     std::cout << "  CPU Threads: " << get_thread_count() << "\n";
+    if (octet_stream)
+        std::cout << "  Output: octet-stream -> " << octet_file << "\n";
     std::cout << "================================================================\n\n";
 
     std::cout << "  METHODOLOGY:\n";
@@ -582,7 +716,19 @@ int main(int argc, char* argv[]) {
     std::cout << "  Power: cpu^dram^cpu^gpu^screen^cpu^rfunit (2,3,1,4)\n";
     std::cout << "  CPU: slow baseline -> really fast.\n";
 
-    std::cout << "\n  Platform: Windows 11 x86_64\n";
+    // Octet-stream binary output
+    if (octet_stream) {
+        write_octet_stream(octet_file.c_str(), cols, combined,
+                           slow_kbps, fast_kbps, accel_factor, power_factor,
+                           boosted_slow_kbps, total_gflops, dram_mbps,
+                           rf_score, tp.index_rate_ops, tp.optimal_chunk_kb,
+                           total_seconds);
+        std::cout << "\n  Octet-stream written: " << octet_file << "\n";
+        std::cout << "  Content-Type: application/octet-stream\n";
+        std::cout << "  Stream format: AI2ORBIT v3 binary\n";
+    }
+
+    std::cout << "\n  Platform: " << platform << "\n";
     std::cout << "================================================================\n";
     std::cout << "  Copyright (c) AI2ORBIT Co. 2026. All rights reserved.\n";
     std::cout << "================================================================\n\n";
