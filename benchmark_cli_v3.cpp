@@ -51,8 +51,8 @@ static constexpr int COL_ACCEPT = 33;
 static constexpr int NUM_COLUMNS = 3;
 static constexpr int TOTAL_SLOW = COL_ACCEPT * NUM_COLUMNS;
 
-static constexpr double BW_MIN_KBPS = 10.0;
-static constexpr double BW_MAX_KBPS = 300.0;
+static constexpr double BW_MIN_KBPS = 700.0;
+static constexpr double BW_MAX_KBPS = 11250.0;
 static constexpr double DELIVER_MIN_SEC = 5.0;
 static constexpr double DELIVER_MAX_SEC = 15.0;
 
@@ -282,7 +282,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  Total accepted: " << TOTAL_SLOW << " slow results\n";
     std::cout << "  Gaussian: fit to slow results only\n";
     std::cout << "  CPU behavior: goes SLOW then REALLY FAST\n";
-    std::cout << "  Bandwidth: 10-300 kbps\n";
+    std::cout << "  Bandwidth: 700-11250 kbps\n";
     std::cout << "  Content delivery: 5-15 seconds\n";
     std::cout << "  Phone content indexing for fast server transport\n";
     print_sep();
@@ -392,7 +392,7 @@ int main(int argc, char* argv[]) {
     std::cout << "\n";
     std::cout << "================================================================\n";
     std::cout << "  PHONE CONTENT INDEXING - FAST SERVER TRANSPORT\n";
-    std::cout << "  Bandwidth: 10-300 kbps | Delivery: 5-15 sec\n";
+    std::cout << "  Bandwidth: 700-11250 kbps | Delivery: 5-15 sec\n";
     std::cout << "================================================================\n\n";
 
     TransportProfile tp{};
@@ -416,10 +416,10 @@ int main(int argc, char* argv[]) {
 
     std::cout << "\n  TRANSPORT CAPACITY:\n";
     print_sep();
-    pm("  5 sec @ 10 kbps:", tp.content_kb_5sec_min, "KB", 2);
-    pm("  5 sec @ 300 kbps:", tp.content_kb_5sec_max, "KB", 2);
-    pm("  15 sec @ 10 kbps:", tp.content_kb_15sec_min, "KB", 2);
-    pm("  15 sec @ 300 kbps:", tp.content_kb_15sec_max, "KB", 2);
+    pm("  5 sec @ 700 kbps:", tp.content_kb_5sec_min, "KB", 2);
+    pm("  5 sec @ 11250 kbps:", tp.content_kb_5sec_max, "KB", 2);
+    pm("  15 sec @ 700 kbps:", tp.content_kb_15sec_min, "KB", 2);
+    pm("  15 sec @ 11250 kbps:", tp.content_kb_15sec_max, "KB", 2);
     pm("  Optimal Chunk:", tp.optimal_chunk_kb, "KB", 2);
     print_sep();
 
@@ -468,7 +468,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  900K attempts timed, " << TOTAL_SLOW << " slowest accepted.\n";
     std::cout << "  CPU: slow baseline -> really fast.\n";
     std::cout << "  Content: " << std::fixed << std::setprecision(1)
-              << tp.optimal_chunk_kb << " KB chunks, 10-300 kbps, 5-15 sec.\n";
+              << tp.optimal_chunk_kb << " KB chunks, 700-11250 kbps, 5-15 sec.\n";
 
     std::cout << "\n  Platform: Windows 11 x86_64\n";
     std::cout << "================================================================\n";
