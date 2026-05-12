@@ -398,14 +398,14 @@ int main(int argc, char* argv[]) {
     TransportProfile tp{};
     tp.slow_baseline_ms = combined.mean / 1e6;
     tp.index_rate_ops = 1e9 / combined.mean;
-    tp.content_kb_5sec_min = BW_MIN_KBPS * DELIVER_MIN_SEC / 8.0;
-    tp.content_kb_5sec_max = BW_MAX_KBPS * DELIVER_MIN_SEC / 8.0;
-    tp.content_kb_15sec_min = BW_MIN_KBPS * DELIVER_MAX_SEC / 8.0;
-    tp.content_kb_15sec_max = BW_MAX_KBPS * DELIVER_MAX_SEC / 8.0;
+    tp.content_kb_5sec_min = BW_MIN_KBPS * DELIVER_MIN_SEC;
+    tp.content_kb_5sec_max = BW_MAX_KBPS * DELIVER_MIN_SEC;
+    tp.content_kb_15sec_min = BW_MIN_KBPS * DELIVER_MAX_SEC;
+    tp.content_kb_15sec_max = BW_MAX_KBPS * DELIVER_MAX_SEC;
 
     double mid_bw = (BW_MIN_KBPS + BW_MAX_KBPS) / 2.0;
     double mid_time = (DELIVER_MIN_SEC + DELIVER_MAX_SEC) / 2.0;
-    tp.optimal_chunk_kb = mid_bw * mid_time / 8.0 / accel_factor;
+    tp.optimal_chunk_kb = mid_bw * mid_time / accel_factor;
 
     std::cout << "  INDEX PERFORMANCE:\n";
     print_sep();
