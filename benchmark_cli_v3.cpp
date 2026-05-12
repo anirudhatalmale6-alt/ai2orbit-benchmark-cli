@@ -63,8 +63,10 @@ static const char* detect_platform() {
 
 static constexpr std::size_t LOOP_COUNT = 300000;
 static constexpr int COL_ACCEPT = 33;
+static constexpr int COL_SLOW = 25;     // 3/4 slowest
+static constexpr int COL_FAST = 8;      // 1/4 best
 static constexpr int NUM_COLUMNS = 3;
-static constexpr int TOTAL_SLOW = COL_ACCEPT * NUM_COLUMNS;
+static constexpr int TOTAL_ACCEPTED = COL_ACCEPT * NUM_COLUMNS;
 
 static constexpr double BW_MIN_KBPS = 700.0;
 static constexpr double BW_MAX_KBPS = 11250.0;
@@ -79,11 +81,15 @@ struct GaussianParams {
 
 struct ColumnResult {
     std::vector<double> accepted_slow;
+    std::vector<double> accepted_fast;
+    std::vector<double> accepted_all;
     double all_min_ns;
     double all_max_ns;
     double all_avg_ns;
     double all_median_ns;
-    GaussianParams gauss;
+    GaussianParams gauss_slow;
+    GaussianParams gauss_fast;
+    GaussianParams gauss_combined;
     double throughput_kbps;
 };
 
@@ -183,24 +189,36 @@ static ColumnResult run_column(int col_num) {
     cr.all_avg_ns = std::accumulate(sorted.begin(), sorted.end(), 0.0) / static_cast<double>(LOOP_COUNT);
     cr.all_median_ns = sorted[LOOP_COUNT / 2];
 
-    // ACCEPT ONLY SLOWEST 33 results from 300K
-    cr.accepted_slow.resize(COL_ACCEPT);
-    for (int i = 0; i < COL_ACCEPT; ++i) {
+    // 3/4 SLOWEST (25 from top)
+    cr.accepted_slow.resize(COL_SLOW);
+    for (int i = 0; i < COL_SLOW; ++i) {
         cr.accepted_slow[i] = sorted[LOOP_COUNT - 1 - i];
     }
 
-    // Fit Gaussian to accepted slow results only
-    cr.gauss = fit_gaussian(cr.accepted_slow);
+    // 1/4 BEST (8 from bottom)
+    cr.accepted_fast.resize(COL_FAST);
+    for (int i = 0; i < COL_FAST; ++i) {
+        cr.accepted_fast[i] = sorted[i];
+    }
 
-    // Throughput based on slow baseline
-    cr.throughput_kbps = (10.0 * 8.0 * 1e9) / cr.gauss.mean / 1000.0;
+    // Combined: 3/4 slow + 1/4 fast = 33 total
+    cr.accepted_all.clear();
+    cr.accepted_all.insert(cr.accepted_all.end(), cr.accepted_slow.begin(), cr.accepted_slow.end());
+    cr.accepted_all.insert(cr.accepted_all.end(), cr.accepted_fast.begin(), cr.accepted_fast.end());
+
+    // Fit Gaussians
+    cr.gauss_slow = fit_gaussian(cr.accepted_slow);
+    cr.gauss_fast = fit_gaussian(cr.accepted_fast);
+    cr.gauss_combined = fit_gaussian(cr.accepted_all);
+
+    cr.throughput_kbps = (10.0 * 8.0 * 1e9) / cr.gauss_combined.mean / 1000.0;
 
     return cr;
 }
 
 static void print_column(const ColumnResult& cr, int col_num) {
     std::cout << "\n    Column " << col_num << " (" << LOOP_COUNT
-              << " timed, " << COL_ACCEPT << " slowest accepted):\n";
+              << " timed, " << COL_SLOW << " slow + " << COL_FAST << " fast accepted):\n";
     print_sep();
 
     std::cout << "    ALL 300K attempts:\n";
@@ -209,20 +227,33 @@ static void print_column(const ColumnResult& cr, int col_num) {
     pm_sci("      Avg Time:", cr.all_avg_ns, "ns");
     pm_sci("      Median Time:", cr.all_median_ns, "ns");
 
-    std::cout << "\n    ACCEPTED SLOWEST " << COL_ACCEPT << " (from " << LOOP_COUNT << "):\n";
-    for (int i = 0; i < std::min(COL_ACCEPT, 10); ++i) {
+    std::cout << "\n    3/4 SLOWEST (" << COL_SLOW << " from " << LOOP_COUNT << "):\n";
+    for (int i = 0; i < std::min(COL_SLOW, 8); ++i) {
         std::ostringstream lbl;
         lbl << "      [" << (i + 1) << "]:";
         pm_sci(lbl.str(), cr.accepted_slow[i], "ns");
     }
-    if (COL_ACCEPT > 10)
-        std::cout << "      ... (" << (COL_ACCEPT - 10) << " more)\n";
+    if (COL_SLOW > 8)
+        std::cout << "      ... (" << (COL_SLOW - 8) << " more)\n";
 
-    std::cout << "\n    GAUSSIAN (slow only):\n";
-    pm_sci("      Mean:", cr.gauss.mean, "ns");
-    pm_sci("      Sigma:", cr.gauss.sigma, "ns");
-    pm_sci("      Mean:", cr.gauss.mean * 1000.0, "ps");
-    pm_sci("      Mean:", cr.gauss.mean / 1e6, "ms");
+    std::cout << "\n    1/4 BEST (" << COL_FAST << " from " << LOOP_COUNT << "):\n";
+    for (int i = 0; i < std::min(COL_FAST, 8); ++i) {
+        std::ostringstream lbl;
+        lbl << "      [" << (i + 1) << "]:";
+        pm_sci(lbl.str(), cr.accepted_fast[i], "ns");
+    }
+
+    std::cout << "\n    GAUSSIAN (3/4 slow):\n";
+    pm_sci("      Mean:", cr.gauss_slow.mean, "ns");
+    pm_sci("      Sigma:", cr.gauss_slow.sigma, "ns");
+    std::cout << "    GAUSSIAN (1/4 fast):\n";
+    pm_sci("      Mean:", cr.gauss_fast.mean, "ns");
+    pm_sci("      Sigma:", cr.gauss_fast.sigma, "ns");
+    std::cout << "    GAUSSIAN (combined 33):\n";
+    pm_sci("      Mean:", cr.gauss_combined.mean, "ns");
+    pm_sci("      Sigma:", cr.gauss_combined.sigma, "ns");
+    pm_sci("      Mean:", cr.gauss_combined.mean * 1000.0, "ps");
+    pm_sci("      Mean:", cr.gauss_combined.mean / 1e6, "ms");
     pm("      Throughput:", cr.throughput_kbps, "kbps", 2);
     print_sep();
 }
@@ -338,17 +369,17 @@ static void write_octet_stream(const char* filename,
         OctetStreamColumn col{};
         col.col_id = c + 1;
         col.num_accepted = COL_ACCEPT;
-        col.gauss_mean = cols[c].gauss.mean;
-        col.gauss_sigma = cols[c].gauss.sigma;
-        col.gauss_amplitude = cols[c].gauss.amplitude;
+        col.gauss_mean = cols[c].gauss_combined.mean;
+        col.gauss_sigma = cols[c].gauss_combined.sigma;
+        col.gauss_amplitude = cols[c].gauss_combined.amplitude;
         col.all_min_ns = cols[c].all_min_ns;
         col.all_max_ns = cols[c].all_max_ns;
         col.all_avg_ns = cols[c].all_avg_ns;
         col.throughput_kbps = cols[c].throughput_kbps;
         out.write(reinterpret_cast<const char*>(&col), sizeof(col));
 
-        for (int i = 0; i < COL_ACCEPT; ++i) {
-            double val = cols[c].accepted_slow[i];
+        for (int i = 0; i < (int)cols[c].accepted_all.size(); ++i) {
+            double val = cols[c].accepted_all[i];
             out.write(reinterpret_cast<const char*>(&val), sizeof(double));
         }
     }
@@ -399,7 +430,7 @@ int main(int argc, char* argv[]) {
     std::cout << "/_/  |_/___/ /_/   /_/ |_/_____/\\____/ /_/\n";
     std::cout << "\n";
     std::cout << "  BenchmarkCore CMD LINE V3\n";
-    std::cout << "  GAUSSIAN CALIBRATION - ACCEPT ONLY SLOW\n";
+    std::cout << "  GAUSSIAN CALIBRATION - 3/4 SLOW + 1/4 BEST\n";
     std::cout << "  Copyright (c) AI2ORBIT Co. 2026\n";
     std::cout << "  Authors: Sami Leino, Anirudha Talmale\n";
     std::cout << "  Platform: " << platform << "\n";
@@ -410,11 +441,11 @@ int main(int argc, char* argv[]) {
 
     std::cout << "  METHODOLOGY:\n";
     print_sep();
-    std::cout << "  Columns: 3 (equal 33/33/33)\n";
+    std::cout << "  Columns: 3 (33 accepted per column)\n";
     std::cout << "  Attempts per column: 300,000 (all timed)\n";
-    std::cout << "  Accept: ONLY slowest 33 from each 300K run\n";
-    std::cout << "  Total accepted: " << TOTAL_SLOW << " slow results\n";
-    std::cout << "  Gaussian: fit to slow results only\n";
+    std::cout << "  Accept: 3/4 slowest (25) + 1/4 best (8) = 33\n";
+    std::cout << "  Total accepted: " << TOTAL_ACCEPTED << " results (75 slow + 24 fast)\n";
+    std::cout << "  Gaussian: fit slow, fast, and combined\n";
     std::cout << "  CPU behavior: goes SLOW then REALLY FAST\n";
     std::cout << "  Bandwidth: 700-11250 kbps\n";
     std::cout << "  Content delivery: 5-15 seconds\n";
@@ -430,7 +461,7 @@ int main(int argc, char* argv[]) {
         std::cout << "\n";
         std::cout << "================================================================\n";
         std::cout << "  COLUMN " << (c+1) << " / " << NUM_COLUMNS
-                  << " (300K attempts -> accept slowest " << COL_ACCEPT << ")\n";
+                  << " (300K -> " << COL_SLOW << " slow + " << COL_FAST << " fast)\n";
         std::cout << "================================================================\n";
 
         cols[c] = run_column(c + 1);
@@ -438,25 +469,45 @@ int main(int argc, char* argv[]) {
     }
 
     // ================================================================
-    // COMBINED GAUSSIAN: all 99 slow results together
+    // COMBINED GAUSSIAN: 3/4 slow + 1/4 fast from all columns
     // ================================================================
     std::cout << "\n";
     std::cout << "================================================================\n";
-    std::cout << "  COMBINED GAUSSIAN (all " << TOTAL_SLOW << " slow results)\n";
-    std::cout << "  Accept ONLY slow. CPU goes slow then really fast.\n";
+    std::cout << "  COMBINED GAUSSIAN (" << TOTAL_ACCEPTED << " results: 3/4 slow + 1/4 fast)\n";
+    std::cout << "  CPU goes slow then really fast.\n";
     std::cout << "================================================================\n\n";
 
-    std::vector<double> all_slow;
-    all_slow.reserve(TOTAL_SLOW);
+    std::vector<double> all_slow, all_fast, all_combined;
     for (int c = 0; c < NUM_COLUMNS; ++c) {
-        for (double v : cols[c].accepted_slow) {
+        for (double v : cols[c].accepted_slow)
             all_slow.push_back(v);
-        }
+        for (double v : cols[c].accepted_fast)
+            all_fast.push_back(v);
+        for (double v : cols[c].accepted_all)
+            all_combined.push_back(v);
     }
 
-    GaussianParams combined = fit_gaussian(all_slow);
+    GaussianParams gauss_slow_all = fit_gaussian(all_slow);
+    GaussianParams gauss_fast_all = fit_gaussian(all_fast);
+    GaussianParams combined = fit_gaussian(all_combined);
 
-    std::cout << "  GAUSSIAN FIT (99 slowest from 900K total attempts):\n";
+    std::cout << "  GAUSSIAN FIT - 3/4 SLOWEST (75 from 900K):\n";
+    print_sep();
+    pm_sci("  Slow Mean:", gauss_slow_all.mean, "ns");
+    pm_sci("  Slow Sigma:", gauss_slow_all.sigma, "ns");
+    pm_sci("  Slow Mean:", gauss_slow_all.mean * 1000.0, "ps");
+    pm_sci("  Slow Mean:", gauss_slow_all.mean / 1e6, "ms");
+    print_sep();
+
+    std::cout << "\n  GAUSSIAN FIT - 1/4 BEST (24 from 900K):\n";
+    print_sep();
+    pm_sci("  Fast Mean:", gauss_fast_all.mean, "ns");
+    pm_sci("  Fast Sigma:", gauss_fast_all.sigma, "ns");
+    pm_sci("  Fast Mean:", gauss_fast_all.mean * 1000.0, "ps");
+    pm_sci("  Fast Mean:", gauss_fast_all.mean / 1e6, "ms");
+    print_sep();
+
+    std::cout << "\n  GAUSSIAN FIT - COMBINED (99 total: 75 slow + 24 fast):\n";
     print_sep();
     pm_sci("  Mean:", combined.mean, "ns");
     pm_sci("  Sigma:", combined.sigma, "ns");
@@ -465,17 +516,17 @@ int main(int argc, char* argv[]) {
     pm_sci("  Mean:", combined.mean / 1e6, "ms");
     print_sep();
 
-    double slow_kbps = (10.0 * 8.0 * 1e9) / combined.mean / 1000.0;
-    double fast_avg = (cols[0].all_min_ns + cols[1].all_min_ns + cols[2].all_min_ns) / 3.0;
-    double accel_factor = combined.mean / fast_avg;
+    double slow_kbps = (10.0 * 8.0 * 1e9) / gauss_slow_all.mean / 1000.0;
+    double fast_kbps_accepted = (10.0 * 8.0 * 1e9) / gauss_fast_all.mean / 1000.0;
+    double accel_factor = gauss_slow_all.mean / gauss_fast_all.mean;
 
-    std::cout << "\n  SLOW -> FAST PROFILE:\n";
+    std::cout << "\n  SLOW -> FAST PROFILE (3/4 vs 1/4):\n";
     print_sep();
-    pm_sci("  Slow Baseline (accepted):", combined.mean, "ns");
-    pm_sci("  Fast Peak (min of 300K):", fast_avg, "ns");
+    pm_sci("  3/4 Slow Baseline:", gauss_slow_all.mean, "ns");
+    pm_sci("  1/4 Fast Best:", gauss_fast_all.mean, "ns");
     pm("  Acceleration:", accel_factor, "x", 1);
     pm("  Slow Throughput:", slow_kbps, "kbps", 2);
-    double fast_kbps = (10.0 * 8.0 * 1e9) / fast_avg / 1000.0;
+    double fast_kbps = fast_kbps_accepted;
     pm("  Fast Throughput:", fast_kbps, "kbps", 2);
     pm("  Speedup:", accel_factor * 100.0, "%", 0);
     print_sep();
@@ -669,27 +720,29 @@ int main(int argc, char* argv[]) {
 
     std::cout << "\n\n";
     std::cout << "================================================================\n";
-    std::cout << "  FINAL RESULTS - ACCEPT ONLY SLOW\n";
+    std::cout << "  FINAL RESULTS - 3/4 SLOW + 1/4 BEST\n";
     std::cout << "================================================================\n\n";
 
     std::cout << "  COLUMN SUMMARY:\n";
     print_sep();
-    std::cout << "  Col  Attempts  Accepted  SlowMean(ns)     SlowSigma(ns)\n";
-    std::cout << "  ---  --------  --------  ---------------  ---------------\n";
+    std::cout << "  Col  Attempts  Slow  Fast  SlowMean(ns)     FastMean(ns)\n";
+    std::cout << "  ---  --------  ----  ----  ---------------  ---------------\n";
     for (int c = 0; c < NUM_COLUMNS; ++c) {
         std::cout << "  " << std::setw(3) << (c+1)
                   << "  " << std::setw(8) << LOOP_COUNT
-                  << "  " << std::setw(8) << COL_ACCEPT
+                  << "  " << std::setw(4) << COL_SLOW
+                  << "  " << std::setw(4) << COL_FAST
                   << "  " << std::scientific << std::setprecision(6)
-                  << std::setw(15) << cols[c].gauss.mean
-                  << "  " << std::setw(15) << cols[c].gauss.sigma
+                  << std::setw(15) << cols[c].gauss_slow.mean
+                  << "  " << std::setw(15) << cols[c].gauss_fast.mean
                   << "\n";
     }
-    std::cout << "  ---  --------  --------  ---------------  ---------------\n";
+    std::cout << "  ---  --------  ----  ----  ---------------  ---------------\n";
     std::cout << "  Tot  " << std::setw(8) << (LOOP_COUNT * NUM_COLUMNS)
-              << "  " << std::setw(8) << TOTAL_SLOW << "\n\n";
+              << "  " << std::setw(4) << (COL_SLOW * NUM_COLUMNS)
+              << "  " << std::setw(4) << (COL_FAST * NUM_COLUMNS) << "\n\n";
 
-    std::cout << "  COMBINED GAUSSIAN (slow only):\n";
+    std::cout << "  COMBINED GAUSSIAN (3/4 slow + 1/4 fast):\n";
     print_sep();
     pm_sci("  Mean:", combined.mean, "ns");
     pm_sci("  Sigma:", combined.sigma, "ns");
@@ -712,7 +765,7 @@ int main(int argc, char* argv[]) {
     std::cout << "\n";
     pm("  Total Benchmark Time:", total_seconds, "seconds", 2);
     std::cout << "\n  Calibration complete.\n";
-    std::cout << "  900K attempts timed, " << TOTAL_SLOW << " slowest accepted.\n";
+    std::cout << "  900K attempts timed, " << TOTAL_ACCEPTED << " accepted (3/4 slow + 1/4 fast).\n";
     std::cout << "  Power: cpu^dram^cpu^gpu^screen^cpu^rfunit (2,3,1,4)\n";
     std::cout << "  CPU: slow baseline -> really fast.\n";
 
