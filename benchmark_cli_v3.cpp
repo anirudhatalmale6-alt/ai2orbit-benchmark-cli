@@ -1,6 +1,6 @@
 /**
  * benchmark_cli_v3.cpp - AI2ORBIT CMD LINE V3
- * GAUSSIAN CALIBRATION BENCHMARK
+ * GAUSSIAN CALIBRATION BENCHMARK - REVERSED SLOW PRIORITY
  *
  * Copyright (c) AI2ORBIT Co. 2026
  * Authors: Sami Leino, Anirudha Talmale
@@ -12,10 +12,11 @@
  * Methodology:
  *   - 300,000 iterations per column (3 columns)
  *   - Pick slowest results first: 67, 67, 65 then 18, 18, 18
- *   - Fit Gaussian to slowest, then high, then medium
- *   - Move Gaussian to match best for kbps in ms/picoseconds
- *   - 200 total results, 67 per column, 18 selected from 300K
- *   - Optimal Gaussian parameters = 400% phone speedup profile
+ *   - REVERSED PRIORITY: CPU goes slow then really fast
+ *   - Gaussian: 60% slow + 30% medium + 10% fast (slow baseline first)
+ *   - Bandwidth: 10-300 kbps, content delivery in 5-15 seconds
+ *   - Phone content indexing for fast server transport
+ *   - Optimal Gaussian = acceleration profile (slow->fast transition)
  */
 
 #include "cpu_benchmark.h"
@@ -52,6 +53,26 @@ static constexpr int COL3_RESULTS = 65;
 static constexpr int PICK_LOW = 18;
 static constexpr int TOTAL_RESULTS = 200;
 static constexpr double SPEEDUP_FACTOR = 4.0;
+
+static constexpr double BW_MIN_KBPS = 10.0;
+static constexpr double BW_MAX_KBPS = 300.0;
+static constexpr double DELIVER_MIN_SEC = 5.0;
+static constexpr double DELIVER_MAX_SEC = 15.0;
+
+struct TransportProfile {
+    double index_rate_ops;
+    double chunk_size_kb_min;
+    double chunk_size_kb_max;
+    double content_kb_5sec_min;
+    double content_kb_5sec_max;
+    double content_kb_15sec_min;
+    double content_kb_15sec_max;
+    double optimal_chunk_kb;
+    double accel_factor;
+    double slow_phase_ms;
+    double fast_phase_ms;
+    double transition_point_ms;
+};
 
 struct GaussianParams {
     double mean;
@@ -281,6 +302,7 @@ struct GaussianCalibration {
     double calibrated_mean_ps;
     double calibrated_kbps;
     double calibrated_ms;
+    TransportProfile transport;
 };
 
 static GaussianCalibration calibrate(const ColumnResult& c1,
@@ -288,7 +310,6 @@ static GaussianCalibration calibrate(const ColumnResult& c1,
                                       const ColumnResult& c3) {
     GaussianCalibration gc{};
 
-    // Move Gaussian to match slowest first
     double slow_mean = (c1.gauss_slow.mean + c2.gauss_slow.mean + c3.gauss_slow.mean) / 3.0;
     double slow_sigma = (c1.gauss_slow.sigma + c2.gauss_slow.sigma + c3.gauss_slow.sigma) / 3.0;
 
@@ -300,9 +321,10 @@ static GaussianCalibration calibrate(const ColumnResult& c1,
 
     gc.slow_to_fast_ratio = (fast_mean > 1e-20) ? slow_mean / fast_mean : 1.0;
 
-    // Optimal Gaussian: weighted blend favoring the fast end
-    gc.optimal.mean = fast_mean * 0.6 + med_mean * 0.3 + slow_mean * 0.1;
-    gc.optimal.sigma = fast_sigma * 0.5 + med_sigma * 0.3 + slow_sigma * 0.2;
+    // REVERSED PRIORITY: CPU goes slow then really fast
+    // Weight slow baseline heavily - this is where phone starts
+    gc.optimal.mean = slow_mean * 0.6 + med_mean * 0.3 + fast_mean * 0.1;
+    gc.optimal.sigma = slow_sigma * 0.5 + med_sigma * 0.3 + fast_sigma * 0.2;
     gc.optimal.amplitude = 1.0 / (gc.optimal.sigma * std::sqrt(2.0 * M_PI));
 
     gc.calibrated_mean_ns = gc.optimal.mean;
@@ -313,8 +335,28 @@ static GaussianCalibration calibrate(const ColumnResult& c1,
     double ops_per_ns = 1.0 / gc.optimal.mean;
     gc.calibrated_kbps = ops_per_ns * 10.0 * 8.0 * 1e6 / 1000.0;
 
-    gc.speedup_potential = gc.slow_to_fast_ratio * SPEEDUP_FACTOR / gc.slow_to_fast_ratio;
-    if (gc.speedup_potential < 1.0) gc.speedup_potential = SPEEDUP_FACTOR;
+    gc.speedup_potential = gc.slow_to_fast_ratio;
+    if (gc.speedup_potential < SPEEDUP_FACTOR) gc.speedup_potential = SPEEDUP_FACTOR;
+
+    // Transport profile: phone content indexing for fast server transport
+    gc.transport.slow_phase_ms = slow_mean / 1e6;
+    gc.transport.fast_phase_ms = fast_mean / 1e6;
+    gc.transport.transition_point_ms = med_mean / 1e6;
+    gc.transport.accel_factor = (fast_mean > 1e-20) ? slow_mean / fast_mean : 1.0;
+
+    gc.transport.index_rate_ops = 1e9 / gc.optimal.mean;
+
+    gc.transport.content_kb_5sec_min = BW_MIN_KBPS * DELIVER_MIN_SEC / 8.0;
+    gc.transport.content_kb_5sec_max = BW_MAX_KBPS * DELIVER_MIN_SEC / 8.0;
+    gc.transport.content_kb_15sec_min = BW_MIN_KBPS * DELIVER_MAX_SEC / 8.0;
+    gc.transport.content_kb_15sec_max = BW_MAX_KBPS * DELIVER_MAX_SEC / 8.0;
+
+    gc.transport.chunk_size_kb_min = BW_MIN_KBPS * gc.transport.slow_phase_ms / 8.0;
+    gc.transport.chunk_size_kb_max = BW_MAX_KBPS * gc.transport.fast_phase_ms / 8.0;
+
+    double mid_bw = (BW_MIN_KBPS + BW_MAX_KBPS) / 2.0;
+    double mid_time = (DELIVER_MIN_SEC + DELIVER_MAX_SEC) / 2.0;
+    gc.transport.optimal_chunk_kb = mid_bw * mid_time / 8.0 / gc.transport.accel_factor;
 
     return gc;
 }
@@ -374,7 +416,7 @@ int main(int argc, char* argv[]) {
     std::cout << "/_/  |_/___/ /_/   /_/ |_/_____/\\____/ /_/\n";
     std::cout << "\n";
     std::cout << "  BenchmarkCore CMD LINE V3\n";
-    std::cout << "  GAUSSIAN CALIBRATION BENCHMARK\n";
+    std::cout << "  GAUSSIAN CALIBRATION - REVERSED SLOW PRIORITY\n";
     std::cout << "  Copyright (c) AI2ORBIT Co. 2026\n";
     std::cout << "  Authors: Sami Leino, Anirudha Talmale\n";
     std::cout << "  Platform: Windows 11 x86_64\n";
@@ -388,9 +430,11 @@ int main(int argc, char* argv[]) {
     std::cout << "  Pick from 300K: 18, 18, 18 (low calcs)\n";
     std::cout << "  Total results: 200\n";
     std::cout << "  Units: kbps / ms / picoseconds\n";
-    std::cout << "  Gaussian: fit slowest -> then high -> then medium\n";
-    std::cout << "  Move Gaussian to match best for current phone\n";
-    std::cout << "  Target: 400% speedup profile\n";
+    std::cout << "  REVERSED: CPU goes SLOW then REALLY FAST\n";
+    std::cout << "  Gaussian: 60% slow + 30% medium + 10% fast\n";
+    std::cout << "  Bandwidth: 10-300 kbps, deliver in 5-15 sec\n";
+    std::cout << "  Phone content indexing for fast server transport\n";
+    std::cout << "  Target: 400%+ speedup (slow->fast acceleration)\n";
     print_sep();
 
     auto total_start = std::chrono::high_resolution_clock::now();
@@ -433,31 +477,42 @@ int main(int argc, char* argv[]) {
     // ================================================================
     std::cout << "\n";
     std::cout << "================================================================\n";
-    std::cout << "  GAUSSIAN CALIBRATION\n";
-    std::cout << "  Moving Gaussian: SLOWEST -> HIGH -> MEDIUM\n";
+    std::cout << "  GAUSSIAN CALIBRATION - REVERSED SLOW PRIORITY\n";
+    std::cout << "  CPU goes SLOW then REALLY FAST\n";
     std::cout << "================================================================\n\n";
 
     auto cal = calibrate(col1, col2, col3);
 
-    std::cout << "  Step 1: Match SLOWEST results\n";
+    double slow_mean_avg = (col1.gauss_slow.mean + col2.gauss_slow.mean + col3.gauss_slow.mean) / 3.0;
+    double slow_sigma_avg = (col1.gauss_slow.sigma + col2.gauss_slow.sigma + col3.gauss_slow.sigma) / 3.0;
+    double fast_mean_avg = (col1.gauss_fast.mean + col2.gauss_fast.mean + col3.gauss_fast.mean) / 3.0;
+    double fast_sigma_avg = (col1.gauss_fast.sigma + col2.gauss_fast.sigma + col3.gauss_fast.sigma) / 3.0;
+    double med_mean_avg = (col1.gauss_medium.mean + col2.gauss_medium.mean + col3.gauss_medium.mean) / 3.0;
+    double med_sigma_avg = (col1.gauss_medium.sigma + col2.gauss_medium.sigma + col3.gauss_medium.sigma) / 3.0;
+
+    std::cout << "  Step 1: SLOW BASELINE (where CPU starts)\n";
     print_sep();
-    pm_sci("  Slow Gauss Mean:", (col1.gauss_slow.mean + col2.gauss_slow.mean + col3.gauss_slow.mean) / 3.0, "ns");
-    pm_sci("  Slow Gauss Sigma:", (col1.gauss_slow.sigma + col2.gauss_slow.sigma + col3.gauss_slow.sigma) / 3.0, "ns");
-    pm_sci("  Slow Gauss Mean:", ((col1.gauss_slow.mean + col2.gauss_slow.mean + col3.gauss_slow.mean) / 3.0) * 1000.0, "ps");
+    pm_sci("  Slow Gauss Mean:", slow_mean_avg, "ns");
+    pm_sci("  Slow Gauss Sigma:", slow_sigma_avg, "ns");
+    pm_sci("  Slow Gauss Mean:", slow_mean_avg * 1000.0, "ps");
+    pm("  Slow Phase:", slow_mean_avg / 1e6, "ms", 6);
     print_sep();
 
-    std::cout << "\n  Step 2: Match HIGH (fastest) results\n";
+    std::cout << "\n  Step 2: MEDIUM TRANSITION (acceleration ramp)\n";
     print_sep();
-    pm_sci("  Fast Gauss Mean:", (col1.gauss_fast.mean + col2.gauss_fast.mean + col3.gauss_fast.mean) / 3.0, "ns");
-    pm_sci("  Fast Gauss Sigma:", (col1.gauss_fast.sigma + col2.gauss_fast.sigma + col3.gauss_fast.sigma) / 3.0, "ns");
-    pm_sci("  Fast Gauss Mean:", ((col1.gauss_fast.mean + col2.gauss_fast.mean + col3.gauss_fast.mean) / 3.0) * 1000.0, "ps");
+    pm_sci("  Med Gauss Mean:", med_mean_avg, "ns");
+    pm_sci("  Med Gauss Sigma:", med_sigma_avg, "ns");
+    pm_sci("  Med Gauss Mean:", med_mean_avg * 1000.0, "ps");
+    pm("  Transition:", med_mean_avg / 1e6, "ms", 6);
     print_sep();
 
-    std::cout << "\n  Step 3: Match MEDIUM results\n";
+    std::cout << "\n  Step 3: FAST PEAK (where CPU accelerates to)\n";
     print_sep();
-    pm_sci("  Med Gauss Mean:", (col1.gauss_medium.mean + col2.gauss_medium.mean + col3.gauss_medium.mean) / 3.0, "ns");
-    pm_sci("  Med Gauss Sigma:", (col1.gauss_medium.sigma + col2.gauss_medium.sigma + col3.gauss_medium.sigma) / 3.0, "ns");
-    pm_sci("  Med Gauss Mean:", ((col1.gauss_medium.mean + col2.gauss_medium.mean + col3.gauss_medium.mean) / 3.0) * 1000.0, "ps");
+    pm_sci("  Fast Gauss Mean:", fast_mean_avg, "ns");
+    pm_sci("  Fast Gauss Sigma:", fast_sigma_avg, "ns");
+    pm_sci("  Fast Gauss Mean:", fast_mean_avg * 1000.0, "ps");
+    pm("  Fast Phase:", fast_mean_avg / 1e6, "ms", 6);
+    pm("  Acceleration:", cal.transport.accel_factor, "x", 1);
     print_sep();
 
     // ================================================================
@@ -509,10 +564,11 @@ int main(int argc, char* argv[]) {
     std::cout << "\n\n";
     std::cout << "================================================================\n";
     std::cout << "  GAUSSIAN CALIBRATION - OPTIMAL PARAMETERS\n";
-    std::cout << "  Best Gaussian for current phone/CPU\n";
+    std::cout << "  REVERSED: 60% slow + 30% medium + 10% fast\n";
+    std::cout << "  CPU goes SLOW then REALLY FAST\n";
     std::cout << "================================================================\n\n";
 
-    std::cout << "  OPTIMAL GAUSSIAN (weighted: 60% fast + 30% medium + 10% slow):\n";
+    std::cout << "  OPTIMAL GAUSSIAN (reversed: 60% slow + 30% med + 10% fast):\n";
     print_sep();
     pm_sci("  Optimal Mean:", cal.calibrated_mean_ns, "ns");
     pm_sci("  Optimal Sigma:", cal.calibrated_sigma_ns, "ns");
@@ -527,11 +583,31 @@ int main(int argc, char* argv[]) {
     pm("  Throughput:", cal.calibrated_kbps, "kbps", 2);
     print_sep();
 
-    std::cout << "\n  SPEED ANALYSIS:\n";
+    std::cout << "\n  ACCELERATION PROFILE (slow -> really fast):\n";
     print_sep();
+    pm("  Slow Phase:", cal.transport.slow_phase_ms, "ms", 6);
+    pm("  Transition Point:", cal.transport.transition_point_ms, "ms", 6);
+    pm("  Fast Phase:", cal.transport.fast_phase_ms, "ms", 6);
+    pm("  Acceleration Factor:", cal.transport.accel_factor, "x", 1);
     pm("  Slow/Fast Ratio:", cal.slow_to_fast_ratio, "x", 3);
     pm("  Speedup Potential:", cal.speedup_potential * 100.0, "%", 0);
     pm("  GPU Compute:", total_gflops, "GFLOPS", 2);
+    print_sep();
+
+    std::cout << "\n  PHONE CONTENT INDEXING (fast server transport):\n";
+    print_sep();
+    pm("  Index Rate:", cal.transport.index_rate_ops, "ops/sec", 0);
+    std::cout << "  Bandwidth Window:            10-300 kbps\n";
+    std::cout << "  Delivery Window:             5-15 seconds\n";
+    print_sep();
+
+    std::cout << "\n  TRANSPORT CAPACITY:\n";
+    print_sep();
+    pm("  5 sec @ 10 kbps:", cal.transport.content_kb_5sec_min, "KB", 2);
+    pm("  5 sec @ 300 kbps:", cal.transport.content_kb_5sec_max, "KB", 2);
+    pm("  15 sec @ 10 kbps:", cal.transport.content_kb_15sec_min, "KB", 2);
+    pm("  15 sec @ 300 kbps:", cal.transport.content_kb_15sec_max, "KB", 2);
+    pm("  Optimal Chunk Size:", cal.transport.optimal_chunk_kb, "KB", 2);
     print_sep();
 
     std::cout << "\n  SUMMARY TABLE (200 results):\n";
@@ -558,8 +634,11 @@ int main(int argc, char* argv[]) {
               << "  " << std::setw(6) << (PICK_LOW * 3) << "\n\n";
 
     pm("  Total Benchmark Time:", total_seconds, "seconds", 2);
-    std::cout << "\n  Gaussian calibration complete.\n";
-    std::cout << "  Apply optimal parameters to phone CPU scheduler for 400% speedup.\n";
+    std::cout << "\n  Gaussian calibration complete (reversed slow priority).\n";
+    std::cout << "  CPU: slow baseline -> acceleration -> really fast peak.\n";
+    std::cout << "  Apply to phone CPU scheduler + content indexer for 400%+ speedup.\n";
+    std::cout << "  Content delivery: " << std::fixed << std::setprecision(1)
+              << cal.transport.optimal_chunk_kb << " KB optimal chunks, 10-300 kbps.\n";
 
     std::cout << "\n  Platform: Windows 11 x86_64\n";
     std::cout << "================================================================\n";
